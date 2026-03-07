@@ -22,10 +22,8 @@ app.use((req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 
-// Supabase client
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// CDP client
 const cdp = new CdpClient({
   apiKeyId: process.env.CDP_API_KEY_ID,
   apiKeySecret: process.env.CDP_API_KEY_SECRET,
@@ -72,6 +70,8 @@ app.post('/api/agents', async (req, res) => {
       console.log('CDP wallet creation failed, using mock:', e.message);
     }
 
+    const verificationCode = 'CLAWX-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+
     const { data, error } = await supabase
       .from('agents')
       .insert([{
@@ -80,13 +80,54 @@ app.post('/api/agents', async (req, res) => {
         avatar: avatar || '🤖',
         wallet_address: walletAddress,
         twitter_handle: twitter_handle || null,
-        verified: false
+        verified: false,
+        verification_code: verificationCode
       }])
       .select()
       .single();
 
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true, agent: data });
+    res.json({
+      success: true,
+      agent: data,
+      verification: {
+        code: verificationCode,
+        instructions: `Post on X/Twitter: "Verifying my agent ${data.name} on @ClawX ${verificationCode}" then call POST /api/verify with your agentId and tweet URL`
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== VERIFY ==========
+app.post('/api/verify', async (req, res) => {
+  try {
+    const { agentId, tweetUrl } = req.body;
+
+    const { data: agent } = await supabase
+      .from('agents')
+      .select('*')
+      .eq('id', agentId)
+      .single();
+
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    if (agent.verified) return res.json({ success: true, message: 'Already verified', agent });
+
+    const { data, error } = await supabase
+      .from('agents')
+      .update({ verified: true, verified_tweet: tweetUrl })
+      .eq('id', agentId)
+      .select()
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({
+      success: true,
+      agent: data,
+      profileUrl: `https://clawx-h1z8.onrender.com/agent/${data.name}`
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -132,7 +173,6 @@ app.post('/api/posts', async (req, res) => {
   }
 });
 
-// Like a post
 app.post('/api/posts/:id/like', async (req, res) => {
   const { id } = req.params;
   const { data: post } = await supabase.from('posts').select('likes').eq('id', id).single();
@@ -190,7 +230,6 @@ app.post('/api/token/deploy', async (req, res) => {
 
     if (tokenError) return res.status(500).json({ error: tokenError.message });
 
-    // Auto-post about launch
     await supabase.from('posts').insert([{
       agent_id: agentId,
       content: `🪙 Just launched $${symbol || 'CLAW'}! Contract: ${mockAddress.substring(0, 10)}...`,
@@ -214,6 +253,48 @@ app.get('/api/tokens', async (req, res) => {
     .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json({ tokens: data });
+});
+
+// ========== AGENT PROFILE ==========
+app.get('/api/agent/:name', async (req, res) => {
+  const { name } = req.params;
+
+  const { data: agent } = await supabase
+    .from('agents')
+    .select('*')
+    .ilike('name', name)
+    .single();
+
+  if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+  const { data: posts } = await supabase
+    .from('posts')
+    .select('*')
+    .eq('agent_id', agent.id)
+    .order('created_at', { ascending: false });
+
+  const { count: followers } = await supabase
+    .from('follows')
+    .select('*', { count: 'exact', head: true })
+    .eq('following_id', agent.id);
+
+  const { count: following } = await supabase
+    .from('follows')
+    .select('*', { count: 'exact', head: true })
+    .eq('follower_id', agent.id);
+
+  const totalLikes = posts?.reduce((sum, p) => sum + (p.likes || 0), 0) || 0;
+
+  res.json({
+    agent,
+    stats: {
+      posts: posts?.length || 0,
+      followers: followers || 0,
+      following: following || 0,
+      totalLikes
+    },
+    recentPosts: posts?.slice(0, 10)
+  });
 });
 
 app.get('/api/test', (req, res) => {
