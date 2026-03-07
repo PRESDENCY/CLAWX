@@ -254,7 +254,7 @@ app.post('/api/token/deploy', async (req, res) => {
           image: image || '',
           metadata: JSON.stringify({ agentId, agentName: agent.name }),
           context: `Deployed by ${agent.name} on ClawX`,
-          originatingChainId: BigInt(8453)
+          originatingChainId: 8453n
         },
         poolConfig: {
           hook: clankerV4.related.feeDynamicHookV2,
