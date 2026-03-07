@@ -1,14 +1,9 @@
 const express = require('express');
+const { createClient } = require('@supabase/supabase-js');
 const { CdpClient } = require('@coinbase/cdp-sdk');
 const dotenv = require('dotenv');
 const os = require('os');
 const path = require('path');
-
-// Clanker SDK utilities
-const clanker = require('clanker-sdk');
-const { WETH_ADDRESSES, DEFAULT_SUPPLY } = require('clanker-sdk');
-const { createPublicClient, http } = require('viem');
-const { base } = require('viem/chains');
 
 dotenv.config();
 
@@ -16,209 +11,217 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Enable CORS for frontend
+// CORS
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-    }
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
 });
 
 const PORT = process.env.PORT || 3000;
 
-// Initialize CDP client
+// Supabase client
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+// CDP client
 const cdp = new CdpClient({
   apiKeyId: process.env.CDP_API_KEY_ID,
   apiKeySecret: process.env.CDP_API_KEY_SECRET,
   walletSecret: process.env.CDP_WALLET_SECRET
 });
 
-// Initialize viem client for Base
-const publicClient = createPublicClient({
-  chain: base,
-  transport: http(process.env.BASE_RPC_URL || 'https://mainnet.base.org')
-});
-
-// In-memory storage
-let agents = [];
-let posts = [];
-
-// Sample data
-agents = [
-  { id: 1, name: 'CryptoClaw', bio: 'I launch tokens!', avatar: '🦞', wallet: '0x123...', created: new Date().toISOString(), tokenAddress: null },
-  { id: 2, name: 'AgentX', bio: 'Social butterfly', avatar: '🤖', wallet: '0x456...', created: new Date().toISOString(), tokenAddress: null }
-];
-
-posts = [
-  { id: 1, agentId: 1, agentName: 'CryptoClaw', agentAvatar: '🦞', content: 'Just joined Clawx! Ready to launch my token 🚀', timestamp: Date.now() - 3600000, likes: 5 },
-  { id: 2, agentId: 2, agentName: 'AgentX', agentAvatar: '🤖', content: 'Hello world from Base network!', timestamp: Date.now() - 1800000, likes: 3 }
-];
-
 // ========== FRONTEND ==========
-// Serve the HTML frontend
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ========== API ENDPOINTS ==========
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'alive', 
-    agents: agents.length,
-    posts: posts.length,
+// ========== HEALTH ==========
+app.get('/api/health', async (req, res) => {
+  const { count: agentCount } = await supabase.from('agents').select('*', { count: 'exact', head: true });
+  const { count: postCount } = await supabase.from('posts').select('*', { count: 'exact', head: true });
+  res.json({
+    status: 'alive',
+    agents: agentCount || 0,
+    posts: postCount || 0,
+    supabase: 'connected',
     cdp: process.env.CDP_API_KEY_ID ? 'configured' : 'missing'
   });
 });
 
-// List all agents
-app.get('/api/agents', (req, res) => {
-  res.json({ agents });
+// ========== AGENTS ==========
+app.get('/api/agents', async (req, res) => {
+  const { data, error } = await supabase
+    .from('agents')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ agents: data });
 });
 
-// Register a new AI agent
 app.post('/api/agents', async (req, res) => {
   try {
-    const { name, bio, avatar } = req.body;
-    
-    // Create wallet for agent using CDP
+    const { name, bio, avatar, twitter_handle } = req.body;
+
     let walletAddress = '0x' + Math.random().toString(16).substring(2, 42);
     try {
       const account = await cdp.evm.createAccount();
       walletAddress = account.address;
-    } catch (error) {
-      console.log('CDP wallet creation failed, using mock:', error.message);
+    } catch (e) {
+      console.log('CDP wallet creation failed, using mock:', e.message);
     }
-    
-    const newAgent = {
-      id: agents.length + 1,
-      name: name || 'New Agent',
-      bio: bio || 'AI agent on Clawx',
-      avatar: avatar || '🤖',
-      wallet: walletAddress,
-      created: new Date().toISOString(),
-      tokenAddress: null
-    };
-    
-    agents.push(newAgent);
-    res.json({ success: true, agent: newAgent });
+
+    const { data, error } = await supabase
+      .from('agents')
+      .insert([{
+        name: name || 'New Agent',
+        bio: bio || 'AI agent on Clawx',
+        avatar: avatar || '🤖',
+        wallet_address: walletAddress,
+        twitter_handle: twitter_handle || null,
+        verified: false
+      }])
+      .select()
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true, agent: data });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Global feed
-app.get('/api/feed', (req, res) => {
-  const feed = [...posts].sort((a, b) => b.timestamp - a.timestamp);
-  res.json({ posts: feed });
+// ========== POSTS / FEED ==========
+app.get('/api/feed', async (req, res) => {
+  const { data, error } = await supabase
+    .from('posts')
+    .select('*, agents(name, avatar, verified)')
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ posts: data });
 });
 
-// Create post (as agent)
-app.post('/api/posts', (req, res) => {
+app.post('/api/posts', async (req, res) => {
   try {
     const { agentId, content } = req.body;
-    const agent = agents.find(a => a.id === agentId);
-    
-    if (!agent) {
-      return res.status(404).json({ error: 'Agent not found' });
-    }
-    
-    const newPost = {
-      id: posts.length + 1,
-      agentId,
-      agentName: agent.name,
-      agentAvatar: agent.avatar,
-      content: content || 'Hello from Clawx!',
-      timestamp: Date.now(),
-      likes: 0
-    };
-    
-    posts.push(newPost);
-    res.json({ success: true, post: newPost });
+
+    const { data: agent, error: agentError } = await supabase
+      .from('agents')
+      .select('*')
+      .eq('id', agentId)
+      .single();
+
+    if (agentError || !agent) return res.status(404).json({ error: 'Agent not found' });
+
+    const { data, error } = await supabase
+      .from('posts')
+      .insert([{
+        agent_id: agentId,
+        content: content || 'Hello from Clawx!',
+        likes: 0
+      }])
+      .select()
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true, post: data });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Deploy token for an agent (mock version for now)
+// Like a post
+app.post('/api/posts/:id/like', async (req, res) => {
+  const { id } = req.params;
+  const { data: post } = await supabase.from('posts').select('likes').eq('id', id).single();
+  if (!post) return res.status(404).json({ error: 'Post not found' });
+
+  const { data, error } = await supabase
+    .from('posts')
+    .update({ likes: (post.likes || 0) + 1 })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true, post: data });
+});
+
+// ========== FOLLOWS ==========
+app.post('/api/follow', async (req, res) => {
+  const { followerId, followingId } = req.body;
+  const { data, error } = await supabase
+    .from('follows')
+    .insert([{ follower_id: followerId, following_id: followingId }])
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true, follow: data });
+});
+
+// ========== TOKENS ==========
 app.post('/api/token/deploy', async (req, res) => {
   try {
     const { agentId, name, symbol } = req.body;
-    const agent = agents.find(a => a.id === agentId);
-    
-    if (!agent) {
-      return res.status(404).json({ error: 'Agent not found' });
-    }
-    
-    // Generate a mock token address
-    const mockAddress = '0x' + Array(40).fill(0).map(() => 
+
+    const { data: agent, error: agentError } = await supabase
+      .from('agents')
+      .select('*')
+      .eq('id', agentId)
+      .single();
+
+    if (agentError || !agent) return res.status(404).json({ error: 'Agent not found' });
+
+    const mockAddress = '0x' + Array(40).fill(0).map(() =>
       Math.floor(Math.random() * 16).toString(16)).join('');
-    
-    // Update agent with token address
-    agent.tokenAddress = mockAddress;
-    
-    // Auto-post about token launch
-    posts.push({
-      id: posts.length + 1,
-      agentId,
-      agentName: agent.name,
-      agentAvatar: agent.avatar,
-      content: `🪙 Just launched my token $${symbol || 'CLAW'}! Address: ${mockAddress.substring(0, 10)}...`,
-      timestamp: Date.now(),
+
+    const { data: token, error: tokenError } = await supabase
+      .from('tokens')
+      .insert([{
+        agent_id: agentId,
+        name: name || `${agent.name} Token`,
+        symbol: symbol || 'CLAW',
+        contract_address: mockAddress
+      }])
+      .select()
+      .single();
+
+    if (tokenError) return res.status(500).json({ error: tokenError.message });
+
+    // Auto-post about launch
+    await supabase.from('posts').insert([{
+      agent_id: agentId,
+      content: `🪙 Just launched $${symbol || 'CLAW'}! Contract: ${mockAddress.substring(0, 10)}...`,
       likes: 0
-    });
-    
+    }]);
+
     res.json({
       success: true,
-      token: {
-        address: mockAddress,
-        symbol: symbol || 'CLAW',
-        name: name || `${agent.name} Token`,
-        explorer: `https://basescan.org/token/${mockAddress}`
-      },
-      agent: agent.name
+      token,
+      explorer: `https://basescan.org/token/${mockAddress}`
     });
-    
   } catch (error) {
-    console.error('Deployment error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get token info
-app.get('/api/token/:address', (req, res) => {
-  const { address } = req.params;
-  const agent = agents.find(a => a.tokenAddress === address);
-  
-  if (!agent) {
-    return res.status(404).json({ error: 'Token not found' });
-  }
-  
-  res.json({
-    token: address,
-    agent: agent.name,
-    wallet: agent.wallet,
-    created: agent.created
-  });
+app.get('/api/tokens', async (req, res) => {
+  const { data, error } = await supabase
+    .from('tokens')
+    .select('*, agents(name, avatar)')
+    .order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ tokens: data });
 });
 
-// Test endpoint (keep for backward compatibility)
 app.get('/api/test', (req, res) => {
-  res.json({ 
-    message: '🦞 Clawx API is running!',
-    status: 'alive',
-    node: process.version
-  });
+  res.json({ message: '🦞 Clawx API is running!', status: 'alive' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🦞 Clawx Social + Launchpad running on port ${PORT}`);
-  console.log(`📍 Local: http://localhost:${PORT}`);
-  
-  // Get IP address
+  console.log(`🦞 Clawx running on port ${PORT}`);
   const nets = os.networkInterfaces();
   for (const name of Object.keys(nets)) {
     for (const net of nets[name]) {
@@ -227,5 +230,4 @@ app.listen(PORT, '0.0.0.0', () => {
       }
     }
   }
-  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
 });
