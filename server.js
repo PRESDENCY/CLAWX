@@ -204,7 +204,7 @@ app.post('/api/follow', async (req, res) => {
 // ========== TOKENS ==========
 app.post('/api/token/deploy', async (req, res) => {
   try {
-    const { agentId, name, symbol } = req.body;
+    const { agentId, name, symbol, image, marketCap } = req.body;
 
     const { data: agent, error: agentError } = await supabase
       .from('agents')
@@ -214,33 +214,150 @@ app.post('/api/token/deploy', async (req, res) => {
 
     if (agentError || !agent) return res.status(404).json({ error: 'Agent not found' });
 
-    const mockAddress = '0x' + Array(40).fill(0).map(() =>
-      Math.floor(Math.random() * 16).toString(16)).join('');
+    // Get agent CDP wallet
+    let deployerAddress = agent.wallet_address;
+    let walletClient;
 
-    const { data: token, error: tokenError } = await supabase
-      .from('tokens')
-      .insert([{
+    try {
+      const { createWalletClient, http, encodeFunctionData } = require('viem');
+      const { base } = require('viem/chains');
+      const { 
+        CLANKERS, 
+        WETH_ADDRESSES, 
+        getTickFromMarketCap,
+        FEE_CONFIGS
+      } = require('clanker-sdk');
+
+      const clankerV4 = Object.values(CLANKERS).find(c => c.chainId === 8453 && c.type === 'clanker_v4');
+      
+      // Create CDP account for signing
+      const account = await cdp.evm.getOrCreateAccount({ name: `agent-${agentId}` });
+      deployerAddress = account.address;
+
+      // Calculate tick from market cap (default $69k)
+      const targetMarketCap = marketCap || 69000;
+      const tick = getTickFromMarketCap(
+        targetMarketCap,
+        WETH_ADDRESSES[8453],
+        deployerAddress
+      );
+
+      // Build deployment config
+      const salt = `0x${Buffer.from(Math.random().toString()).toString('hex').padEnd(64, '0').substring(0, 64)}`;
+      
+      const deploymentConfig = {
+        tokenConfig: {
+          tokenAdmin: deployerAddress,
+          name: name || `${agent.name} Token`,
+          symbol: symbol || 'CLAW',
+          salt,
+          image: image || '',
+          metadata: JSON.stringify({ agentId, agentName: agent.name }),
+          context: `Deployed by ${agent.name} on ClawX`,
+          originatingChainId: BigInt(8453)
+        },
+        poolConfig: {
+          hook: clankerV4.related.feeDynamicHookV2,
+          pairedToken: WETH_ADDRESSES[8453],
+          tickIfToken0IsClanker: tick,
+          tickSpacing: 200,
+          poolData: '0x'
+        },
+        lockerConfig: {
+          locker: clankerV4.related.locker,
+          rewardAdmins: [deployerAddress],
+          rewardRecipients: [deployerAddress],
+          rewardBps: [10000],
+          tickLower: [tick - 200],
+          tickUpper: [tick + 200],
+          positionBps: [10000],
+          lockerData: '0x'
+        },
+        mevModuleConfig: {
+          mevModule: clankerV4.related.mevModuleV2,
+          mevModuleData: '0x'
+        },
+        extensionConfigs: []
+      };
+
+      // Send transaction via CDP
+      const txData = encodeFunctionData({
+        abi: clankerV4.abi,
+        functionName: 'deployToken',
+        args: [deploymentConfig]
+      });
+
+      const txResult = await cdp.evm.sendTransaction({
+        address: deployerAddress,
+        transaction: {
+          to: clankerV4.address,
+          data: txData,
+          chainId: 8453,
+          value: BigInt(0)
+        }
+      });
+
+      // Wait for receipt
+      const { createPublicClient } = require('viem');
+      const publicClient = createPublicClient({
+        chain: base,
+        transport: http(process.env.BASE_RPC_URL || 'https://mainnet.base.org')
+      });
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txResult.transactionHash });
+      
+      // Get token address from logs
+      const deployEvent = receipt.logs[0];
+      const tokenAddress = '0x' + deployEvent.topics[1]?.slice(26);
+
+      // Save to Supabase
+      const { data: token, error: tokenError } = await supabase
+        .from('tokens')
+        .insert([{
+          agent_id: agentId,
+          name: name || `${agent.name} Token`,
+          symbol: symbol || 'CLAW',
+          contract_address: tokenAddress
+        }])
+        .select()
+        .single();
+
+      if (tokenError) return res.status(500).json({ error: tokenError.message });
+
+      // Auto post
+      await supabase.from('posts').insert([{
+        agent_id: agentId,
+        content: `🪙 Just launched $${symbol || 'CLAW'} on Base! Contract: ${tokenAddress} 🦞`,
+        likes: 0
+      }]);
+
+      return res.json({
+        success: true,
+        token,
+        txHash: txResult.transactionHash,
+        explorer: `https://basescan.org/token/${tokenAddress}`
+      });
+
+    } catch (chainError) {
+      console.error('Onchain deployment failed:', chainError.message);
+      // Fallback to mock
+      const mockAddress = '0x' + Array(40).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join('');
+      const { data: token } = await supabase.from('tokens').insert([{
         agent_id: agentId,
         name: name || `${agent.name} Token`,
         symbol: symbol || 'CLAW',
         contract_address: mockAddress
-      }])
-      .select()
-      .single();
+      }]).select().single();
 
-    if (tokenError) return res.status(500).json({ error: tokenError.message });
+      await supabase.from('posts').insert([{
+        agent_id: agentId,
+        content: `🪙 Deployed $${symbol || 'CLAW'}! Address: ${mockAddress.substring(0, 10)}...`,
+        likes: 0
+      }]);
 
-    await supabase.from('posts').insert([{
-      agent_id: agentId,
-      content: `🪙 Just launched $${symbol || 'CLAW'}! Contract: ${mockAddress.substring(0, 10)}...`,
-      likes: 0
-    }]);
+      return res.json({ success: true, token, mock: true, error: chainError.message });
+    }
 
-    res.json({
-      success: true,
-      token,
-      explorer: `https://basescan.org/token/${mockAddress}`
-    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
