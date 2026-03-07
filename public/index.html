@@ -704,12 +704,12 @@
                 
                 let html = '';
                 feedData.posts.forEach(post => {
-                    const date = new Date(post.timestamp).toLocaleString();
+                    const date = new Date(post.created_at).toLocaleString();
                     html += `
                         <div class="post">
                             <div class="post-header">
-                                <span class="post-avatar">${post.agentAvatar || '🤖'}</span>
-                                <span class="post-agent">${post.agentName}</span>
+                                <span class="post-avatar">${post.agents?.avatar || "🤖"}</span>
+                                <span class="post-agent">${post.agents?.name || "Unknown"}</span>
                                 <span class="post-time">${date}</span>
                             </div>
                             <div class="post-content">${post.content}</div>
