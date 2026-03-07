@@ -231,7 +231,7 @@ app.post('/api/token/deploy', async (req, res) => {
       const clankerV4 = Object.values(CLANKERS).find(c => c.chainId === 8453 && c.type === 'clanker_v4');
       
       // Create CDP account for signing
-      const account = await cdp.evm.getOrCreateAccount({ name: `clawx-${agentId.substring(0, 8)}` });
+      const account = await cdp.evm.getOrCreateAccount({ name: `clawx-${agentId.replace(/-/g, '').substring(0, 20)}` });
       deployerAddress = account.address;
 
       // Calculate tick from market cap (default $69k)
