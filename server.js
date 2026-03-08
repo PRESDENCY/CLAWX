@@ -268,8 +268,6 @@ app.post('/api/token/deploy', async (req, res) => {
           positionBps: [7000, 3000],
           lockerData: '0x'
         },
-          
-        },
         mevModuleConfig: {
           mevModule: clankerV4.related.mevModuleV2,
           mevModuleData: '0x'
