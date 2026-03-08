@@ -266,8 +266,8 @@ app.post('/api/token/deploy', async (req, res) => {
           rewardAdmins: [deployerAddress, PLATFORM_WALLET],
           rewardRecipients: [deployerAddress, PLATFORM_WALLET],
           rewardBps: [7000, 3000],
-          tickLower: [tick - tickSpacing, tick - tickSpacing],
-          tickUpper: [tick + tickSpacing, tick + tickSpacing],
+          tickLower: [-230400, -230400],
+          tickUpper: [-120000, -120000],
           positionBps: [7000, 3000],
           lockerData: '0x'
         },
