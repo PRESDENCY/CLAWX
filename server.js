@@ -260,13 +260,15 @@ app.post('/api/token/deploy', async (req, res) => {
         },
         lockerConfig: {
           locker: clankerV4.related.locker,
-          rewardAdmins: [deployerAddress],
-          rewardRecipients: [deployerAddress],
-          rewardBps: [10000],
-          tickLower: [tick - tickSpacing],
-          tickUpper: [tick + tickSpacing],
-          positionBps: [10000],
+          rewardAdmins: [deployerAddress, '0x2805e9dbce2839c5feae858723f9499f15fd88cf'],
+          rewardRecipients: [deployerAddress, '0x2805e9dbce2839c5feae858723f9499f15fd88cf'],
+          rewardBps: [7000, 3000],
+          tickLower: [tick - tickSpacing, tick - tickSpacing],
+          tickUpper: [tick + tickSpacing, tick + tickSpacing],
+          positionBps: [7000, 3000],
           lockerData: '0x'
+        },
+          
         },
         mevModuleConfig: {
           mevModule: clankerV4.related.mevModuleV2,
