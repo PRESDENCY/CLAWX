@@ -283,12 +283,14 @@ app.post('/api/token/deploy', async (req, res) => {
       });
 
       const txResult = await cdp.evm.sendTransaction({
-        address: deployerAddress,
-        transaction: {
-          to: clankerV4.address,
-          data: txData,
-          chainId: 8453,
-          value: 0n
+  address: deployerAddress,
+  network: 'base',
+  transaction: {
+    to: clankerV4.address,
+    data: txData,
+    value: 0n
+  }
+});
         }
       });
 
