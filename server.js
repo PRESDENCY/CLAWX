@@ -240,7 +240,8 @@ app.post('/api/token/deploy', async (req, res) => {
       const tickSpacing = tickResult.tickSpacing;
 
       // Build salt
-      const salt = `0x${Buffer.from(Math.random().toString()).toString('hex').padEnd(64, '0').substring(0, 64)}`;
+      const { randomBytes } = require('crypto');
+ const salt = '0x' + randomBytes(32).toString('hex');
 
       const deploymentConfig = {
         tokenConfig: {
