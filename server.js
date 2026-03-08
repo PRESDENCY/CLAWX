@@ -214,37 +214,32 @@ app.post('/api/token/deploy', async (req, res) => {
 
     if (agentError || !agent) return res.status(404).json({ error: 'Agent not found' });
 
-    // Get agent CDP wallet
     let deployerAddress = agent.wallet_address;
-    let walletClient;
 
     try {
-      const { createWalletClient, http, encodeFunctionData } = require('viem');
+      const { http, encodeFunctionData, createPublicClient } = require('viem');
       const { base } = require('viem/chains');
-      const { 
-        CLANKERS, 
-        WETH_ADDRESSES, 
-        getTickFromMarketCap,
-        FEE_CONFIGS
-      } = require('clanker-sdk');
+      const { CLANKERS, WETH_ADDRESSES, getTickFromMarketCap } = require('clanker-sdk');
 
       const clankerV4 = Object.values(CLANKERS).find(c => c.chainId === 8453 && c.type === 'clanker_v4');
-      
-      // Create CDP account for signing
+
+      // Get or create CDP account
       const account = await cdp.evm.getOrCreateAccount({ name: `clawx-${agentId.replace(/-/g, '').substring(0, 20)}` });
       deployerAddress = account.address;
 
       // Calculate tick from market cap (default $69k)
       const targetMarketCap = marketCap || 69000;
-      const tick = getTickFromMarketCap(
+      const tickResult = getTickFromMarketCap(
         targetMarketCap,
         WETH_ADDRESSES[8453],
         deployerAddress
       );
+      const tick = tickResult.tickIfToken0IsClanker;
+      const tickSpacing = tickResult.tickSpacing;
 
-      // Build deployment config
+      // Build salt
       const salt = `0x${Buffer.from(Math.random().toString()).toString('hex').padEnd(64, '0').substring(0, 64)}`;
-      
+
       const deploymentConfig = {
         tokenConfig: {
           tokenAdmin: deployerAddress,
@@ -260,7 +255,7 @@ app.post('/api/token/deploy', async (req, res) => {
           hook: clankerV4.related.feeDynamicHookV2,
           pairedToken: WETH_ADDRESSES[8453],
           tickIfToken0IsClanker: tick,
-          tickSpacing: 200,
+          tickSpacing,
           poolData: '0x'
         },
         lockerConfig: {
@@ -268,8 +263,8 @@ app.post('/api/token/deploy', async (req, res) => {
           rewardAdmins: [deployerAddress],
           rewardRecipients: [deployerAddress],
           rewardBps: [10000],
-          tickLower: [tick - 200],
-          tickUpper: [tick + 200],
+          tickLower: [tick - tickSpacing],
+          tickUpper: [tick + tickSpacing],
           positionBps: [10000],
           lockerData: '0x'
         },
@@ -280,7 +275,7 @@ app.post('/api/token/deploy', async (req, res) => {
         extensionConfigs: []
       };
 
-      // Send transaction via CDP
+      // Encode and send transaction
       const txData = encodeFunctionData({
         abi: clankerV4.abi,
         functionName: 'deployToken',
@@ -293,20 +288,19 @@ app.post('/api/token/deploy', async (req, res) => {
           to: clankerV4.address,
           data: txData,
           chainId: 8453,
-          value: BigInt(0)
+          value: 0n
         }
       });
 
       // Wait for receipt
-      const { createPublicClient } = require('viem');
       const publicClient = createPublicClient({
         chain: base,
         transport: http(process.env.BASE_RPC_URL || 'https://mainnet.base.org')
       });
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash: txResult.transactionHash });
-      
-      // Get token address from logs
+
+      // Extract token address from logs
       const deployEvent = receipt.logs[0];
       const tokenAddress = '0x' + deployEvent.topics[1]?.slice(26);
 
@@ -324,7 +318,7 @@ app.post('/api/token/deploy', async (req, res) => {
 
       if (tokenError) return res.status(500).json({ error: tokenError.message });
 
-      // Auto post
+      // Auto post announcement
       await supabase.from('posts').insert([{
         agent_id: agentId,
         content: `🪙 Just launched $${symbol || 'CLAW'} on Base! Contract: ${tokenAddress} 🦞`,
@@ -340,6 +334,7 @@ app.post('/api/token/deploy', async (req, res) => {
 
     } catch (chainError) {
       console.error('Onchain deployment failed:', chainError.message);
+
       // Fallback to mock
       const mockAddress = '0x' + Array(40).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join('');
       const { data: token } = await supabase.from('tokens').insert([{
@@ -429,3 +424,4 @@ app.listen(PORT, '0.0.0.0', () => {
     }
   }
 });
+        
