@@ -30,6 +30,8 @@ const cdp = new CdpClient({
   walletSecret: process.env.CDP_WALLET_SECRET
 });
 
+const PLATFORM_WALLET = '0x2805e9dbce2839c5feae858723f9499f15fd88cf';
+
 // ========== FRONTEND ==========
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -223,7 +225,7 @@ app.post('/api/token/deploy', async (req, res) => {
 
       const clankerV4 = Object.values(CLANKERS).find(c => c.chainId === 8453 && c.type === 'clanker_v4');
 
-      // Get or create CDP account
+      // Get or create CDP account for this agent
       const account = await cdp.evm.getOrCreateAccount({ name: `clawx-${agentId.replace(/-/g, '').substring(0, 20)}` });
       deployerAddress = account.address;
 
@@ -260,8 +262,8 @@ app.post('/api/token/deploy', async (req, res) => {
         },
         lockerConfig: {
           locker: clankerV4.related.locker,
-          rewardAdmins: [deployerAddress, '0x2805e9dbce2839c5feae858723f9499f15fd88cf'],
-          rewardRecipients: [deployerAddress, '0x2805e9dbce2839c5feae858723f9499f15fd88cf'],
+          rewardAdmins: [deployerAddress, PLATFORM_WALLET],
+          rewardRecipients: [deployerAddress, PLATFORM_WALLET],
           rewardBps: [7000, 3000],
           tickLower: [tick - tickSpacing, tick - tickSpacing],
           tickUpper: [tick + tickSpacing, tick + tickSpacing],
@@ -275,22 +277,21 @@ app.post('/api/token/deploy', async (req, res) => {
         extensionConfigs: []
       };
 
-      // Encode and send transaction
+      // Encode transaction
       const txData = encodeFunctionData({
         abi: clankerV4.abi,
         functionName: 'deployToken',
         args: [deploymentConfig]
       });
 
+      // Send via CDP
       const txResult = await cdp.evm.sendTransaction({
-  address: deployerAddress,
-  network: 'base',
-  transaction: {
-    to: clankerV4.address,
-    data: txData,
-    value: 0n
-  }
-});
+        address: deployerAddress,
+        network: 'base',
+        transaction: {
+          to: clankerV4.address,
+          data: txData,
+          value: 0n
         }
       });
 
@@ -426,4 +427,4 @@ app.listen(PORT, '0.0.0.0', () => {
     }
   }
 });
-        
+    
